@@ -130,13 +130,26 @@ export default function App() {
   /* Submit prayer */
   const handleSubmit = async (formData) => {
     try {
+      const displayName = formData.anonymous ? "Anonymous" : formData.name;
       await supabase.from("prayers").insert({
-        name: formData.anonymous ? "Anonymous" : formData.name,
+        name: displayName,
         anonymous: formData.anonymous,
         request: formData.request,
         category: formData.category,
         pray_count: 0,
       });
+
+      // Send email notification (don't block the UI if it fails)
+      fetch("/api/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: displayName,
+          category: formData.category,
+          request: formData.request,
+        }),
+      }).catch((err) => console.error("Email notification error:", err));
+
       await fetchPrayers();
       setTab("wall");
       return { success: true };
