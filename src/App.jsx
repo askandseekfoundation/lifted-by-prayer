@@ -40,25 +40,25 @@ export default function App() {
       setUser(session?.user ?? null);
       if (session?.user) fetchProfile(session.user.id);
     });
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
       if (session?.user) fetchProfile(session.user.id);
       else setProfile(null);
     });
+
     fetchPrayers();
     fetchDonations();
-    const prayerSub = supabase
-  .channel("public:prayers")
-  .on("postgres_changes", { event: "INSERT", schema: "public", table: "prayers" }, () => fetchPrayers())
-  .on("postgres_changes", { event: "UPDATE", schema: "public", table: "prayers" }, () => fetchPrayers())
-  .on("postgres_changes", { event: "DELETE", schema: "public", table: "prayers" }, () => fetchPrayers())
-  .subscribe();
 
-const donationSub = supabase
-  .channel("public:donations")
-  .on("postgres_changes", { event: "INSERT", schema: "public", table: "donations" }, () => fetchDonations())
-  .subscribe();
-    return () => { subscription.unsubscribe(); supabase.removeChannel(prayerSub); supabase.removeChannel(donationSub); };
+    const pollInterval = setInterval(() => {
+      fetchPrayers();
+      fetchDonations();
+    }, 10000);
+
+    return () => {
+      subscription.unsubscribe();
+      clearInterval(pollInterval);
+    };
   }, []);
 
   const fetchProfile = async (userId) => {
@@ -68,13 +68,20 @@ const donationSub = supabase
 
   const fetchPrayers = async () => {
     setLoading(true);
-    const { data } = await supabase.from("prayers").select(`*, profiles(username, full_name, avatar_url), comments(id, content, is_anonymous, created_at, profiles(username, full_name, avatar_url)), reactions(id, reaction_type, user_id)`).order("created_at", { ascending: false });
+    const { data } = await supabase
+      .from("prayers")
+      .select(`*, profiles(username, full_name, avatar_url), comments(id, content, is_anonymous, created_at, profiles(username, full_name, avatar_url)), reactions(id, reaction_type, user_id)`)
+      .order("created_at", { ascending: false });
     setPrayers(data || []);
     setLoading(false);
   };
 
   const fetchDonations = async () => {
-    const { data } = await supabase.from("donations").select(`*, profiles(username, full_name)`).order("created_at", { ascending: false }).limit(20);
+    const { data } = await supabase
+      .from("donations")
+      .select(`*, profiles(username, full_name)`)
+      .order("created_at", { ascending: false })
+      .limit(20);
     setDonations(data || []);
   };
 
@@ -88,15 +95,25 @@ const donationSub = supabase
     setSubmitting(true);
     try {
       if (authMode === "register") {
-        const { data, error } = await supabase.auth.signUp({ email: authForm.email, password: authForm.password });
+        const { data, error } = await supabase.auth.signUp({
+          email: authForm.email,
+          password: authForm.password
+        });
         if (error) throw error;
         if (data.user) {
-          await supabase.from("profiles").insert({ id: data.user.id, username: authForm.username.toLowerCase().replace(/\s/g, ""), full_name: authForm.full_name });
+          await supabase.from("profiles").insert({
+            id: data.user.id,
+            username: authForm.username.toLowerCase().replace(/\s/g, ""),
+            full_name: authForm.full_name
+          });
         }
-        showNotif("Account created! Welcome to Lifted by Prayer 🙏");
+        showNotif("Account created! Please check your email to confirm. 🙏");
         setShowAuth(false);
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email: authForm.email, password: authForm.password });
+        const { error } = await supabase.auth.signInWithPassword({
+          email: authForm.email,
+          password: authForm.password
+        });
         if (error) throw error;
         showNotif("Welcome back! 🙏");
         setShowAuth(false);
@@ -118,13 +135,28 @@ const donationSub = supabase
     if (!prayerForm.content.trim()) return;
     setSubmitting(true);
     try {
-      const res = await fetch("/api/moderate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: prayerForm.content }) });
+      const res = await fetch("/api/moderate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: prayerForm.content })
+      });
       const { flagged } = await res.json();
-      if (flagged) { showNotif("Your request contains content that goes against our community guidelines.", "error"); setSubmitting(false); return; }
-      await supabase.from("prayers").insert({ user_id: user.id, content: prayerForm.content, category: prayerForm.category, is_anonymous: prayerForm.is_anonymous, status: "submitted" });
+      if (flagged) {
+        showNotif("Your request contains content that goes against our community guidelines.", "error");
+        setSubmitting(false);
+        return;
+      }
+      await supabase.from("prayers").insert({
+        user_id: user.id,
+        content: prayerForm.content,
+        category: prayerForm.category,
+        is_anonymous: prayerForm.is_anonymous,
+        status: "submitted"
+      });
       setPrayerForm({ content: "", category: "Healing", is_anonymous: false });
       showNotif("Your prayer request has been lifted! 🙏");
       setTab("wall");
+      fetchPrayers();
     } catch {
       showNotif("Something went wrong. Please try again.", "error");
     }
@@ -138,7 +170,11 @@ const donationSub = supabase
     if (existing) {
       await supabase.from("reactions").delete().eq("id", existing.id);
     } else {
-      await supabase.from("reactions").insert({ prayer_id: prayerId, user_id: user.id, reaction_type: reactionType });
+      await supabase.from("reactions").insert({
+        prayer_id: prayerId,
+        user_id: user.id,
+        reaction_type: reactionType
+      });
     }
     fetchPrayers();
   };
@@ -147,10 +183,22 @@ const donationSub = supabase
     if (!user) { setShowAuth(true); return; }
     const content = commentInputs[prayerId]?.trim();
     if (!content) return;
-    const res = await fetch("/api/moderate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: content }) });
+    const res = await fetch("/api/moderate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: content })
+    });
     const { flagged } = await res.json();
-    if (flagged) { showNotif("Your comment goes against our community guidelines.", "error"); return; }
-    await supabase.from("comments").insert({ prayer_id: prayerId, user_id: user.id, content, is_anonymous: false });
+    if (flagged) {
+      showNotif("Your comment goes against our community guidelines.", "error");
+      return;
+    }
+    await supabase.from("comments").insert({
+      prayer_id: prayerId,
+      user_id: user.id,
+      content,
+      is_anonymous: false
+    });
     setCommentInputs(prev => ({ ...prev, [prayerId]: "" }));
     fetchPrayers();
   };
@@ -171,10 +219,21 @@ const donationSub = supabase
   const getReactionCount = (prayer, type) => prayer.reactions?.filter(r => r.reaction_type === type).length || 0;
   const hasReacted = (prayer, type) => prayer.reactions?.some(r => r.reaction_type === type && r.user_id === user?.id);
   const getInitials = (name) => name ? name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2) : "?";
-  const timeAgo = (date) => { const s = Math.floor((new Date() - new Date(date)) / 1000); if (s < 60) return "just now"; if (s < 3600) return `${Math.floor(s/60)}m ago`; if (s < 86400) return `${Math.floor(s/3600)}h ago`; return `${Math.floor(s/86400)}d ago`; };
+  const timeAgo = (date) => {
+    const s = Math.floor((new Date() - new Date(date)) / 1000);
+    if (s < 60) return "just now";
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+    return `${Math.floor(s / 86400)}d ago`;
+  };
 
   const Avatar = ({ profile, size = 40 }) => {
-    const s = { width: size, height: size, borderRadius: "50%", flexShrink: 0, overflow: "hidden", border: "2px solid #e8a0be", display: "flex", alignItems: "center", justifyContent: "center", background: "#f4c0d4", color: "#7d2a4a", fontWeight: 700, fontSize: size * 0.3, cursor: "pointer" };
+    const s = {
+      width: size, height: size, borderRadius: "50%", flexShrink: 0,
+      overflow: "hidden", border: "2px solid #e8a0be", display: "flex",
+      alignItems: "center", justifyContent: "center", background: "#f4c0d4",
+      color: "#7d2a4a", fontWeight: 700, fontSize: size * 0.3, cursor: "pointer"
+    };
     if (profile?.avatar_url) return <div style={s}><img src={profile.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>;
     return <div style={s}>{getInitials(profile?.full_name || profile?.username || "?")}</div>;
   };
@@ -182,7 +241,14 @@ const donationSub = supabase
   const ProfileModal = ({ profileData, onClose }) => {
     const [profilePrayers, setProfilePrayers] = useState([]);
     useEffect(() => {
-      if (profileData) supabase.from("prayers").select("*, reactions(id, reaction_type, user_id), comments(id)").eq("user_id", profileData.id).eq("is_anonymous", false).order("created_at", { ascending: false }).then(({ data }) => setProfilePrayers(data || []));
+      if (profileData) {
+        supabase.from("prayers")
+          .select("*, reactions(id, reaction_type, user_id), comments(id)")
+          .eq("user_id", profileData.id)
+          .eq("is_anonymous", false)
+          .order("created_at", { ascending: false })
+          .then(({ data }) => setProfilePrayers(data || []));
+      }
     }, [profileData]);
     if (!profileData) return null;
     return (
@@ -446,7 +512,7 @@ const donationSub = supabase
         {/* Right Panel */}
         <div style={{ borderLeft: "0.5px solid #f0dce8", padding: "20px 14px", background: "#fff", position: "sticky", top: 57, height: "calc(100vh - 57px)", overflowY: "auto" }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: "#b090a4", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 12 }}>Trending</div>
-          {["Healing", "Provision", "Family", "Strength", "Spiritual Growth"].map((cat, i) => (
+          {["Healing", "Provision", "Family", "Strength", "Spiritual Growth"].map((cat) => (
             <div key={cat} style={{ padding: "8px 0", borderBottom: "0.5px solid #f0dce8" }}>
               <div style={{ fontSize: 10, color: "#b090a4" }}>Category</div>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#1a0d14" }}>#{cat}</div>
