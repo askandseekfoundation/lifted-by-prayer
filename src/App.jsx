@@ -1,720 +1,460 @@
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
 
-/* ─── Supabase lightweight client ─── */
-const SUPABASE_URL = "https://fdphbzxkqqihigqhpynw.supabase.co";
-const SUPABASE_KEY =
-  "sb_publishable_4Vq6vik7S51luaVJkN3ASg_T8LN7bL6";
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
+);
 
-const supabase = {
-  from(table) {
-    const base = `${SUPABASE_URL}/rest/v1/${table}`;
-    const headers = {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: "return=representation",
-    };
-    return {
-      async select(columns = "*", order = { column: "created_at", ascending: false }) {
-        const url = `${base}?select=${columns}&order=${order.column}.${order.ascending ? "asc" : "desc"}`;
-        const res = await fetch(url, { headers });
-        if (!res.ok) throw new Error(await res.text());
-        return res.json();
-      },
-      async insert(row) {
-        const res = await fetch(base, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(row),
-        });
-        if (!res.ok) throw new Error(await res.text());
-        return res.json();
-      },
-      async update(id, updates) {
-        const url = `${base}?id=eq.${id}`;
-        const res = await fetch(url, {
-          method: "PATCH",
-          headers,
-          body: JSON.stringify(updates),
-        });
-        if (!res.ok) throw new Error(await res.text());
-        return res.json();
-      },
-    };
-  },
-};
-
-/* ─── Style constants ─── */
-const CREAM = "#FFF8F0";
-const PINK = "#F4A7BB";
-const PINK_LIGHT = "#FCEEF2";
-const PINK_DARK = "#E8899F";
-const TEXT_DARK = "#3D2B2B";
-const TEXT_MED = "#6B5252";
-const TEXT_LIGHT = "#9B8585";
-const WHITE = "#FFFFFF";
-const SHADOW = "0 2px 12px rgba(244,167,187,0.15)";
-
-/* ─── Categories ─── */
 const CATEGORIES = [
-  "Health & Healing",
-  "Family & Relationships",
-  "Finances & Provision",
-  "Guidance & Direction",
-  "Gratitude & Praise",
+  "Healing",
+  "Provision",
+  "Family",
+  "Marriage",
+  "Strength",
+  "Guidance",
   "Grief & Loss",
+  "Gratitude",
   "Spiritual Growth",
   "Other",
 ];
 
-/* ─── Icons (inline SVG) ─── */
-const HeartIcon = ({ filled, size = 18 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? PINK : "none"} stroke={PINK} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-  </svg>
-);
-
-const PrayerIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={PINK} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" opacity="0.2" fill={PINK_LIGHT}/>
-    <path d="M8 14s1.5 2 4 2 4-2 4-2" />
-    <line x1="9" y1="9" x2="9.01" y2="9" strokeWidth="3" strokeLinecap="round" />
-    <line x1="15" y1="9" x2="15.01" y2="9" strokeWidth="3" strokeLinecap="round" />
-  </svg>
-);
-
-/* ─── Main App ─── */
 export default function App() {
   const [tab, setTab] = useState("wall");
   const [prayers, setPrayers] = useState([]);
+  const [donations, setDonations] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  /* Fetch prayers */
-  const fetchPrayers = useCallback(async () => {
-    try {
-      setLoading(true);
-      const data = await supabase.from("prayers").select();
-      setPrayers(data || []);
-      setError(null);
-    } catch (err) {
-      console.error("Fetch error:", err);
-      setError("Unable to load prayers. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [showAuth, setShowAuth] = useState(false);
+  const [authMode, setAuthMode] = useState("login");
+  const [showProfile, setShowProfile] = useState(null);
+  const [authForm, setAuthForm] = useState({ email: "", password: "", username: "", full_name: "" });
+  const [prayerForm, setPrayerForm] = useState({ content: "", category: "Healing", is_anonymous: false });
+  const [commentInputs, setCommentInputs] = useState({});
+  const [submitting, setSubmitting] = useState(false);
+  const [notification, setNotification] = useState(null);
 
   useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      if (session?.user) fetchProfile(session.user.id);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      if (session?.user) fetchProfile(session.user.id);
+      else setProfile(null);
+    });
     fetchPrayers();
-  }, [fetchPrayers]);
+    fetchDonations();
+    const prayerSub = supabase.channel("prayers").on("postgres_changes", { event: "*", schema: "public", table: "prayers" }, fetchPrayers).subscribe();
+    const donationSub = supabase.channel("donations").on("postgres_changes", { event: "*", schema: "public", table: "donations" }, fetchDonations).subscribe();
+    return () => { subscription.unsubscribe(); supabase.removeChannel(prayerSub); supabase.removeChannel(donationSub); };
+  }, []);
 
-  /* Pray for someone */
-  const handlePray = async (id, currentCount) => {
-    const storageKey = `prayed_${id}`;
-    if (localStorage.getItem(storageKey)) return;
-
-    const newCount = (currentCount || 0) + 1;
-    setPrayers((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, pray_count: newCount } : p))
-    );
-    localStorage.setItem(storageKey, "true");
-
-    try {
-      await supabase.from("prayers").update(id, { pray_count: newCount });
-    } catch (err) {
-      console.error("Pray update error:", err);
-    }
+  const fetchProfile = async (userId) => {
+    const { data } = await supabase.from("profiles").select("*").eq("id", userId).single();
+    setProfile(data);
   };
 
-  /* Submit prayer */
-  const handleSubmit = async (formData) => {
-    try {
-      const displayName = formData.anonymous ? "Anonymous" : formData.name;
-      await supabase.from("prayers").insert({
-        name: displayName,
-        anonymous: formData.anonymous,
-        request: formData.request,
-        category: formData.category,
-        pray_count: 0,
-      });
-
-      // Send email notification (don't block the UI if it fails)
-      fetch("/api/notify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: displayName,
-          category: formData.category,
-          request: formData.request,
-        }),
-      }).catch((err) => console.error("Email notification error:", err));
-
-      await fetchPrayers();
-      setTab("wall");
-      return { success: true };
-    } catch (err) {
-      console.error("Submit error:", err);
-      return { success: false, error: "Unable to submit prayer. Please try again." };
-    }
+  const fetchPrayers = async () => {
+    setLoading(true);
+    const { data } = await supabase.from("prayers").select(`*, profiles(username, full_name, avatar_url), comments(id, content, is_anonymous, created_at, profiles(username, full_name, avatar_url)), reactions(id, reaction_type, user_id)`).order("created_at", { ascending: false });
+    setPrayers(data || []);
+    setLoading(false);
   };
 
-  return (
-    <div style={{ minHeight: "100vh", backgroundColor: CREAM, fontFamily: "'Georgia', 'Times New Roman', serif" }}>
-      {/* Header */}
-      <header style={{
-        background: `linear-gradient(135deg, ${WHITE} 0%, ${PINK_LIGHT} 100%)`,
-        padding: "32px 20px 20px",
-        textAlign: "center",
-        borderBottom: `2px solid ${PINK}`,
-      }}>
-        <div style={{ fontSize: "13px", letterSpacing: "3px", color: PINK_DARK, marginBottom: "6px", fontFamily: "'Georgia', serif" }}>
-          ✦ A MINISTRY OF ASK & SEEK FOUNDATION ✦
-        </div>
-        <h1 style={{
-          fontSize: "clamp(28px, 6vw, 42px)",
-          color: TEXT_DARK,
-          margin: "0 0 4px",
-          fontWeight: "400",
-          fontFamily: "'Georgia', serif",
-          letterSpacing: "1px",
-        }}>
-          Lifted by Prayer
-        </h1>
-        <p style={{ color: TEXT_MED, fontSize: "15px", margin: 0, fontStyle: "italic" }}>
-          "Ask, and it shall be given you; seek, and ye shall find." — Matthew 7:7
-        </p>
-      </header>
+  const fetchDonations = async () => {
+    const { data } = await supabase.from("donations").select(`*, profiles(username, full_name)`).order("created_at", { ascending: false }).limit(20);
+    setDonations(data || []);
+  };
 
-      {/* Tab Navigation */}
-      <nav style={{
-        display: "flex",
-        justifyContent: "center",
-        gap: "4px",
-        padding: "12px 16px",
-        backgroundColor: WHITE,
-        boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
-        position: "sticky",
-        top: 0,
-        zIndex: 100,
-      }}>
-        {[
-          { key: "wall", label: "🙏 Prayer Wall" },
-          { key: "submit", label: "✍️ Submit Request" },
-          { key: "give", label: "💝 Give / Donate" },
-        ].map(({ key, label }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            style={{
-              padding: "10px 20px",
-              border: "none",
-              borderRadius: "25px",
-              fontSize: "14px",
-              fontFamily: "'Georgia', serif",
-              cursor: "pointer",
-              transition: "all 0.25s ease",
-              backgroundColor: tab === key ? PINK : "transparent",
-              color: tab === key ? WHITE : TEXT_MED,
-              fontWeight: tab === key ? "bold" : "normal",
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </nav>
+  const showNotif = (msg, type = "success") => {
+    setNotification({ msg, type });
+    setTimeout(() => setNotification(null), 3000);
+  };
 
-      {/* Content */}
-      <main style={{ maxWidth: "720px", margin: "0 auto", padding: "24px 16px 80px" }}>
-        {tab === "wall" && (
-          <PrayerWall
-            prayers={prayers}
-            loading={loading}
-            error={error}
-            onPray={handlePray}
-            onRefresh={fetchPrayers}
-          />
-        )}
-        {tab === "submit" && <SubmitForm onSubmit={handleSubmit} />}
-        {tab === "give" && <GiveDonate />}
-      </main>
-
-      {/* Footer */}
-      <footer style={{
-        textAlign: "center",
-        padding: "28px 20px",
-        borderTop: `2px solid ${PINK_LIGHT}`,
-        backgroundColor: WHITE,
-      }}>
-        <div style={{
-          fontSize: "12px",
-          letterSpacing: "2.5px",
-          color: TEXT_LIGHT,
-          fontFamily: "'Georgia', serif",
-          fontWeight: "bold",
-        }}>
-          LIFTED BY PRAYER · A MINISTRY OF ASK & SEEK FOUNDATION
-        </div>
-        <div style={{ fontSize: "11px", color: TEXT_LIGHT, marginTop: "8px" }}>
-          A 501(c)(3) nonprofit organization · EIN 42-2057592
-        </div>
-        <div style={{ fontSize: "11px", color: TEXT_LIGHT, marginTop: "4px" }}>
-          info@askandseekfoundation.org
-        </div>
-      </footer>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════
-   Prayer Wall Tab
-   ═══════════════════════════════════════ */
-function PrayerWall({ prayers, loading, error, onPray, onRefresh }) {
-  const [filter, setFilter] = useState("All");
-
-  const filtered = filter === "All" ? prayers : prayers.filter((p) => p.category === filter);
-
-  return (
-    <div>
-      <div style={{ textAlign: "center", marginBottom: "24px" }}>
-        <h2 style={{ color: TEXT_DARK, fontWeight: "400", fontSize: "24px", margin: "0 0 6px", fontFamily: "'Georgia', serif" }}>
-          Community Prayer Wall
-        </h2>
-        <p style={{ color: TEXT_MED, fontSize: "14px", margin: 0 }}>
-          {prayers.length} prayer{prayers.length !== 1 ? "s" : ""} lifted up
-        </p>
-      </div>
-
-      {/* Category Filter */}
-      <div style={{
-        display: "flex",
-        flexWrap: "wrap",
-        gap: "6px",
-        justifyContent: "center",
-        marginBottom: "20px",
-      }}>
-        {["All", ...CATEGORIES].map((cat) => (
-          <button
-            key={cat}
-            onClick={() => setFilter(cat)}
-            style={{
-              padding: "6px 14px",
-              borderRadius: "20px",
-              border: `1px solid ${filter === cat ? PINK : "#E8D8D8"}`,
-              backgroundColor: filter === cat ? PINK_LIGHT : WHITE,
-              color: filter === cat ? PINK_DARK : TEXT_LIGHT,
-              fontSize: "12px",
-              cursor: "pointer",
-              fontFamily: "'Georgia', serif",
-              transition: "all 0.2s ease",
-            }}
-          >
-            {cat}
-          </button>
-        ))}
-      </div>
-
-      {loading && (
-        <div style={{ textAlign: "center", padding: "40px", color: TEXT_LIGHT }}>
-          <div style={{ fontSize: "28px", marginBottom: "12px", animation: "pulse 1.5s infinite" }}>🙏</div>
-          <p>Loading prayers...</p>
-          <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
-        </div>
-      )}
-
-      {error && (
-        <div style={{
-          textAlign: "center",
-          padding: "24px",
-          backgroundColor: "#FFF0F0",
-          borderRadius: "12px",
-          color: "#C44",
-          margin: "16px 0",
-        }}>
-          <p>{error}</p>
-          <button
-            onClick={onRefresh}
-            style={{
-              marginTop: "8px",
-              padding: "8px 20px",
-              backgroundColor: PINK,
-              color: WHITE,
-              border: "none",
-              borderRadius: "20px",
-              cursor: "pointer",
-              fontFamily: "'Georgia', serif",
-            }}
-          >
-            Try Again
-          </button>
-        </div>
-      )}
-
-      {!loading && !error && filtered.length === 0 && (
-        <div style={{ textAlign: "center", padding: "40px", color: TEXT_LIGHT }}>
-          <p style={{ fontSize: "16px" }}>No prayers in this category yet.</p>
-          <p style={{ fontSize: "14px" }}>Be the first to submit a request! 🩷</p>
-        </div>
-      )}
-
-      {/* Prayer Cards */}
-      <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-        {filtered.map((prayer) => (
-          <PrayerCard key={prayer.id} prayer={prayer} onPray={onPray} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/* ─── Single Prayer Card ─── */
-function PrayerCard({ prayer, onPray }) {
-  const hasPrayed = localStorage.getItem(`prayed_${prayer.id}`);
-  const timeAgo = getTimeAgo(prayer.created_at);
-
-  return (
-    <div style={{
-      backgroundColor: WHITE,
-      borderRadius: "16px",
-      padding: "20px 24px",
-      boxShadow: SHADOW,
-      border: `1px solid ${PINK_LIGHT}`,
-      transition: "transform 0.2s ease, box-shadow 0.2s ease",
-    }}>
-      {/* Header row */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
-        <div>
-          <span style={{ fontWeight: "bold", color: TEXT_DARK, fontSize: "15px" }}>
-            {prayer.anonymous ? "Anonymous" : prayer.name || "Anonymous"}
-          </span>
-          <span style={{ color: TEXT_LIGHT, fontSize: "12px", marginLeft: "10px" }}>{timeAgo}</span>
-        </div>
-        {prayer.category && (
-          <span style={{
-            fontSize: "11px",
-            padding: "3px 10px",
-            borderRadius: "12px",
-            backgroundColor: PINK_LIGHT,
-            color: PINK_DARK,
-            fontFamily: "'Georgia', serif",
-            whiteSpace: "nowrap",
-          }}>
-            {prayer.category}
-          </span>
-        )}
-      </div>
-
-      {/* Prayer text */}
-      <p style={{
-        color: TEXT_MED,
-        fontSize: "15px",
-        lineHeight: "1.7",
-        margin: "0 0 14px",
-        fontFamily: "'Georgia', serif",
-      }}>
-        {prayer.request}
-      </p>
-
-      {/* Pray button */}
-      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-        <button
-          onClick={() => !hasPrayed && onPray(prayer.id, prayer.pray_count)}
-          disabled={!!hasPrayed}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-            padding: "6px 16px",
-            borderRadius: "20px",
-            border: `1px solid ${PINK}`,
-            backgroundColor: hasPrayed ? PINK_LIGHT : WHITE,
-            color: PINK_DARK,
-            cursor: hasPrayed ? "default" : "pointer",
-            fontSize: "13px",
-            fontFamily: "'Georgia', serif",
-            transition: "all 0.2s ease",
-            opacity: hasPrayed ? 0.8 : 1,
-          }}
-        >
-          <HeartIcon filled={!!hasPrayed} size={16} />
-          {hasPrayed ? "Prayed" : "Pray"}
-        </button>
-        <span style={{ fontSize: "13px", color: TEXT_LIGHT }}>
-          {prayer.pray_count || 0} {(prayer.pray_count || 0) === 1 ? "prayer" : "prayers"}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════
-   Submit Request Tab
-   ═══════════════════════════════════════ */
-function SubmitForm({ onSubmit }) {
-  const [name, setName] = useState("");
-  const [anonymous, setAnonymous] = useState(false);
-  const [request, setRequest] = useState("");
-  const [category, setCategory] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [message, setMessage] = useState(null);
-
-  const handleSubmit = async () => {
-    if (!request.trim()) {
-      setMessage({ type: "error", text: "Please enter your prayer request." });
-      return;
-    }
-    if (!category) {
-      setMessage({ type: "error", text: "Please select a category." });
-      return;
-    }
-
+  const handleAuth = async (e) => {
+    e.preventDefault();
     setSubmitting(true);
-    setMessage(null);
-
-    const result = await onSubmit({ name, anonymous, request, category });
-
-    if (result.success) {
-      setName("");
-      setAnonymous(false);
-      setRequest("");
-      setCategory("");
-      setMessage({ type: "success", text: "Your prayer has been lifted up! 🙏🩷" });
-    } else {
-      setMessage({ type: "error", text: result.error });
+    try {
+      if (authMode === "register") {
+        const { data, error } = await supabase.auth.signUp({ email: authForm.email, password: authForm.password });
+        if (error) throw error;
+        if (data.user) {
+          await supabase.from("profiles").insert({ id: data.user.id, username: authForm.username.toLowerCase().replace(/\s/g, ""), full_name: authForm.full_name });
+        }
+        showNotif("Account created! Welcome to Lifted by Prayer 🙏");
+        setShowAuth(false);
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email: authForm.email, password: authForm.password });
+        if (error) throw error;
+        showNotif("Welcome back! 🙏");
+        setShowAuth(false);
+      }
+    } catch (err) {
+      showNotif(err.message, "error");
     }
     setSubmitting(false);
   };
 
-  const inputStyle = {
-    width: "100%",
-    padding: "12px 16px",
-    borderRadius: "12px",
-    border: `1px solid #E0D0D0`,
-    fontSize: "15px",
-    fontFamily: "'Georgia', serif",
-    backgroundColor: WHITE,
-    color: TEXT_DARK,
-    outline: "none",
-    transition: "border-color 0.2s ease",
-    boxSizing: "border-box",
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    showNotif("Signed out. God bless you! 🙏");
   };
 
-  const labelStyle = {
-    display: "block",
-    marginBottom: "6px",
-    fontSize: "14px",
-    color: TEXT_DARK,
-    fontWeight: "bold",
-    fontFamily: "'Georgia', serif",
+  const handleSubmitPrayer = async (e) => {
+    e.preventDefault();
+    if (!user) { setShowAuth(true); return; }
+    if (!prayerForm.content.trim()) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/moderate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: prayerForm.content }) });
+      const { flagged } = await res.json();
+      if (flagged) { showNotif("Your request contains content that goes against our community guidelines.", "error"); setSubmitting(false); return; }
+      await supabase.from("prayers").insert({ user_id: user.id, content: prayerForm.content, category: prayerForm.category, is_anonymous: prayerForm.is_anonymous, status: "submitted" });
+      setPrayerForm({ content: "", category: "Healing", is_anonymous: false });
+      showNotif("Your prayer request has been lifted! 🙏");
+      setTab("wall");
+    } catch {
+      showNotif("Something went wrong. Please try again.", "error");
+    }
+    setSubmitting(false);
   };
 
-  return (
-    <div>
-      <div style={{ textAlign: "center", marginBottom: "28px" }}>
-        <h2 style={{ color: TEXT_DARK, fontWeight: "400", fontSize: "24px", margin: "0 0 6px", fontFamily: "'Georgia', serif" }}>
-          Submit a Prayer Request
-        </h2>
-        <p style={{ color: TEXT_MED, fontSize: "14px", margin: 0, fontStyle: "italic" }}>
-          Share your heart. Our community will pray with you.
-        </p>
-      </div>
+  const handleReact = async (prayerId, reactionType) => {
+    if (!user) { setShowAuth(true); return; }
+    const prayer = prayers.find(p => p.id === prayerId);
+    const existing = prayer?.reactions?.find(r => r.user_id === user.id && r.reaction_type === reactionType);
+    if (existing) {
+      await supabase.from("reactions").delete().eq("id", existing.id);
+    } else {
+      await supabase.from("reactions").insert({ prayer_id: prayerId, user_id: user.id, reaction_type: reactionType });
+    }
+    fetchPrayers();
+  };
 
-      <div style={{
-        backgroundColor: WHITE,
-        borderRadius: "16px",
-        padding: "28px",
-        boxShadow: SHADOW,
-        border: `1px solid ${PINK_LIGHT}`,
-      }}>
-        {/* Name */}
-        <div style={{ marginBottom: "18px" }}>
-          <label style={labelStyle}>Your Name</label>
-          <input
-            type="text"
-            placeholder="Enter your name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            disabled={anonymous}
-            style={{ ...inputStyle, opacity: anonymous ? 0.5 : 1 }}
-          />
-        </div>
+  const handleComment = async (prayerId) => {
+    if (!user) { setShowAuth(true); return; }
+    const content = commentInputs[prayerId]?.trim();
+    if (!content) return;
+    const res = await fetch("/api/moderate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: content }) });
+    const { flagged } = await res.json();
+    if (flagged) { showNotif("Your comment goes against our community guidelines.", "error"); return; }
+    await supabase.from("comments").insert({ prayer_id: prayerId, user_id: user.id, content, is_anonymous: false });
+    setCommentInputs(prev => ({ ...prev, [prayerId]: "" }));
+    fetchPrayers();
+  };
 
-        {/* Anonymous */}
-        <div style={{ marginBottom: "18px", display: "flex", alignItems: "center", gap: "10px" }}>
-          <input
-            type="checkbox"
-            id="anon"
-            checked={anonymous}
-            onChange={(e) => setAnonymous(e.target.checked)}
-            style={{ width: "18px", height: "18px", accentColor: PINK }}
-          />
-          <label htmlFor="anon" style={{ fontSize: "14px", color: TEXT_MED, cursor: "pointer", fontFamily: "'Georgia', serif" }}>
-            Submit anonymously
-          </label>
-        </div>
+  const handleAvatarUpload = async (e) => {
+    if (!user) return;
+    const file = e.target.files[0];
+    if (!file) return;
+    const ext = file.name.split(".").pop();
+    const path = `avatars/${user.id}.${ext}`;
+    await supabase.storage.from("avatars").upload(path, file, { upsert: true });
+    const { data } = supabase.storage.from("avatars").getPublicUrl(path);
+    await supabase.from("profiles").update({ avatar_url: data.publicUrl }).eq("id", user.id);
+    fetchProfile(user.id);
+    showNotif("Profile photo updated! 🙏");
+  };
 
-        {/* Category */}
-        <div style={{ marginBottom: "18px" }}>
-          <label style={labelStyle}>Category</label>
-          <select
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            style={{ ...inputStyle, cursor: "pointer", appearance: "auto" }}
-          >
-            <option value="">Select a category...</option>
-            {CATEGORIES.map((cat) => (
-              <option key={cat} value={cat}>{cat}</option>
-            ))}
-          </select>
-        </div>
+  const getReactionCount = (prayer, type) => prayer.reactions?.filter(r => r.reaction_type === type).length || 0;
+  const hasReacted = (prayer, type) => prayer.reactions?.some(r => r.reaction_type === type && r.user_id === user?.id);
+  const getInitials = (name) => name ? name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2) : "?";
+  const timeAgo = (date) => { const s = Math.floor((new Date() - new Date(date)) / 1000); if (s < 60) return "just now"; if (s < 3600) return `${Math.floor(s/60)}m ago`; if (s < 86400) return `${Math.floor(s/3600)}h ago`; return `${Math.floor(s/86400)}d ago`; };
 
-        {/* Prayer Request */}
-        <div style={{ marginBottom: "22px" }}>
-          <label style={labelStyle}>Prayer Request</label>
-          <textarea
-            placeholder="Share your prayer request here..."
-            value={request}
-            onChange={(e) => setRequest(e.target.value)}
-            rows={5}
-            style={{ ...inputStyle, resize: "vertical", lineHeight: "1.6" }}
-          />
-        </div>
+  const Avatar = ({ profile, size = 40 }) => {
+    const s = { width: size, height: size, borderRadius: "50%", flexShrink: 0, overflow: "hidden", border: "2px solid #e8a0be", display: "flex", alignItems: "center", justifyContent: "center", background: "#f4c0d4", color: "#7d2a4a", fontWeight: 700, fontSize: size * 0.3, cursor: "pointer" };
+    if (profile?.avatar_url) return <div style={s}><img src={profile.avatar_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>;
+    return <div style={s}>{getInitials(profile?.full_name || profile?.username || "?")}</div>;
+  };
 
-        {/* Message */}
-        {message && (
-          <div style={{
-            padding: "12px 16px",
-            borderRadius: "10px",
-            marginBottom: "16px",
-            fontSize: "14px",
-            fontFamily: "'Georgia', serif",
-            backgroundColor: message.type === "success" ? "#F0FFF4" : "#FFF0F0",
-            color: message.type === "success" ? "#2D8A4E" : "#C44",
-            border: `1px solid ${message.type === "success" ? "#C6F6D5" : "#FED7D7"}`,
-          }}>
-            {message.text}
+  const ProfileModal = ({ profileData, onClose }) => {
+    const [profilePrayers, setProfilePrayers] = useState([]);
+    useEffect(() => {
+      if (profileData) supabase.from("prayers").select("*, reactions(id, reaction_type, user_id), comments(id)").eq("user_id", profileData.id).eq("is_anonymous", false).order("created_at", { ascending: false }).then(({ data }) => setProfilePrayers(data || []));
+    }, [profileData]);
+    if (!profileData) return null;
+    return (
+      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
+        <div style={{ background: "#fff", borderRadius: 16, width: "100%", maxWidth: 560, maxHeight: "80vh", overflow: "auto" }} onClick={e => e.stopPropagation()}>
+          <div style={{ background: "#f0c4d4", height: 80, borderRadius: "16px 16px 0 0" }} />
+          <div style={{ padding: "0 20px 20px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginTop: -28, marginBottom: 12 }}>
+              <Avatar profile={profileData} size={64} />
+              <button onClick={onClose} style={{ background: "none", border: "1.5px solid #c2527e", color: "#c2527e", borderRadius: 20, padding: "6px 16px", cursor: "pointer", fontFamily: "inherit" }}>Close</button>
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#1a0d14" }}>{profileData.full_name}</div>
+            <div style={{ fontSize: 13, color: "#b090a4", marginBottom: 8 }}>@{profileData.username}</div>
+            {profileData.bio && <div style={{ fontSize: 13, color: "#7a5068", marginBottom: 12 }}>{profileData.bio}</div>}
+            <div style={{ fontSize: 12, color: "#b090a4", marginBottom: 16 }}>{profilePrayers.length} prayers shared</div>
+            <div style={{ borderTop: "0.5px solid #f0dce8", paddingTop: 16 }}>
+              {profilePrayers.map(p => (
+                <div key={p.id} style={{ background: "#faf5f8", borderRadius: 10, padding: 12, marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, color: "#b090a4", marginBottom: 4 }}>{timeAgo(p.created_at)}</div>
+                  <div style={{ fontSize: 13, color: "#1a0d14", lineHeight: 1.6 }}>{p.content}</div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                    <span style={{ fontSize: 12, color: "#7a5068" }}>🙏 {getReactionCount(p, "pray")}</span>
+                    <span style={{ fontSize: 12, color: "#7a5068" }}>✝️ {getReactionCount(p, "cross")}</span>
+                    <span style={{ fontSize: 12, color: "#7a5068" }}>❤️ {getReactionCount(p, "heart")}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
-        )}
-
-        {/* Submit Button */}
-        <button
-          onClick={handleSubmit}
-          disabled={submitting}
-          style={{
-            width: "100%",
-            padding: "14px",
-            borderRadius: "12px",
-            border: "none",
-            backgroundColor: submitting ? TEXT_LIGHT : PINK,
-            color: WHITE,
-            fontSize: "16px",
-            fontWeight: "bold",
-            fontFamily: "'Georgia', serif",
-            cursor: submitting ? "not-allowed" : "pointer",
-            transition: "all 0.25s ease",
-            letterSpacing: "0.5px",
-          }}
-        >
-          {submitting ? "Submitting..." : "🙏 Lift This Prayer Up"}
-        </button>
+        </div>
       </div>
+    );
+  };
 
-      <p style={{ textAlign: "center", fontSize: "12px", color: TEXT_LIGHT, marginTop: "16px", fontStyle: "italic" }}>
-        All prayer requests are treated with love and confidentiality.
-      </p>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════
-   Give / Donate Tab
-   ═══════════════════════════════════════ */
-function GiveDonate() {
   return (
-    <div>
-      <div style={{ textAlign: "center", marginBottom: "28px" }}>
-        <h2 style={{ color: TEXT_DARK, fontWeight: "400", fontSize: "24px", margin: "0 0 6px", fontFamily: "'Georgia', serif" }}>
-          Give & Support
-        </h2>
-        <p style={{ color: TEXT_MED, fontSize: "14px", margin: 0, fontStyle: "italic" }}>
-          "Each of you should give what you have decided in your heart to give." — 2 Corinthians 9:7
-        </p>
+    <div style={{ minHeight: "100vh", background: "#faf5f8", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
+      {notification && (
+        <div style={{ position: "fixed", top: 16, right: 16, zIndex: 9999, background: notification.type === "error" ? "#feeaea" : "#eaf5ee", border: `1px solid ${notification.type === "error" ? "#e89090" : "#7dc898"}`, color: notification.type === "error" ? "#7a1010" : "#1a5030", padding: "12px 20px", borderRadius: 10, fontSize: 14, fontWeight: 600, boxShadow: "0 2px 8px rgba(0,0,0,0.1)" }}>
+          {notification.msg}
+        </div>
+      )}
+
+      {showAuth && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowAuth(false)}>
+          <div style={{ background: "#fff", borderRadius: 16, padding: 32, width: "100%", maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+            <div style={{ textAlign: "center", marginBottom: 24 }}>
+              <div style={{ fontSize: 20, fontWeight: 700, color: "#7d2a4a", marginBottom: 4 }}>{authMode === "login" ? "Welcome back 🙏" : "Join the community 🙏"}</div>
+              <div style={{ fontSize: 13, color: "#b090a4" }}>{authMode === "login" ? "Sign in to your account" : "Create your free account"}</div>
+            </div>
+            <form onSubmit={handleAuth}>
+              {authMode === "register" && (
+                <>
+                  <input value={authForm.full_name} onChange={e => setAuthForm(p => ({ ...p, full_name: e.target.value }))} placeholder="Full name" required style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, marginBottom: 10, fontSize: 14, fontFamily: "inherit", background: "#faf5f8" }} />
+                  <input value={authForm.username} onChange={e => setAuthForm(p => ({ ...p, username: e.target.value }))} placeholder="Username (no spaces)" required style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, marginBottom: 10, fontSize: 14, fontFamily: "inherit", background: "#faf5f8" }} />
+                </>
+              )}
+              <input type="email" value={authForm.email} onChange={e => setAuthForm(p => ({ ...p, email: e.target.value }))} placeholder="Email address" required style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, marginBottom: 10, fontSize: 14, fontFamily: "inherit", background: "#faf5f8" }} />
+              <input type="password" value={authForm.password} onChange={e => setAuthForm(p => ({ ...p, password: e.target.value }))} placeholder="Password" required style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, marginBottom: 16, fontSize: 14, fontFamily: "inherit", background: "#faf5f8" }} />
+              <button type="submit" disabled={submitting} style={{ width: "100%", background: "#c2527e", color: "#fff", border: "none", borderRadius: 22, padding: "12px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                {submitting ? "Please wait..." : authMode === "login" ? "Sign In" : "Create Account"}
+              </button>
+            </form>
+            <div style={{ textAlign: "center", marginTop: 16, fontSize: 13, color: "#b090a4" }}>
+              {authMode === "login" ? "Don't have an account? " : "Already have an account? "}
+              <span onClick={() => setAuthMode(authMode === "login" ? "register" : "login")} style={{ color: "#c2527e", cursor: "pointer", fontWeight: 600 }}>
+                {authMode === "login" ? "Register" : "Sign in"}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ProfileModal profileData={showProfile} onClose={() => setShowProfile(null)} />
+
+      {/* Navbar */}
+      <div style={{ background: "#fff", borderBottom: "0.5px solid #f0dce8", padding: "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 32, height: 32, borderRadius: 8, background: "#c2527e", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <span style={{ color: "#fff", fontSize: 16 }}>🙏</span>
+          </div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#7d2a4a", lineHeight: 1.2 }}>Lifted by Prayer</div>
+            <div style={{ fontSize: 10, color: "#b090a4" }}>Ask & Seek Foundation</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {user && profile ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <label style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6, background: "#fbeaf2", border: "0.5px solid #e8a0be", borderRadius: 20, padding: "5px 12px", fontSize: 12, color: "#7d2a4a" }}>
+                <span>📷</span> Photo
+                <input type="file" accept="image/*" onChange={handleAvatarUpload} style={{ display: "none" }} />
+              </label>
+              <Avatar profile={profile} size={32} />
+              <span style={{ fontSize: 13, color: "#7d2a4a", fontWeight: 600 }}>@{profile.username}</span>
+              <button onClick={handleSignOut} style={{ background: "none", border: "1px solid #f0dce8", color: "#b090a4", borderRadius: 20, padding: "5px 12px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Sign out</button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => { setAuthMode("login"); setShowAuth(true); }} style={{ background: "none", border: "1px solid #c2527e", color: "#c2527e", borderRadius: 20, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>Sign in</button>
+              <button onClick={() => { setAuthMode("register"); setShowAuth(true); }} style={{ background: "#c2527e", color: "#fff", border: "none", borderRadius: 20, padding: "6px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>✦ Register</button>
+            </div>
+          )}
+        </div>
       </div>
 
-      <div style={{
-        backgroundColor: WHITE,
-        borderRadius: "16px",
-        padding: "32px 28px",
-        boxShadow: SHADOW,
-        border: `1px solid ${PINK_LIGHT}`,
-        textAlign: "center",
-      }}>
-        <div style={{ fontSize: "48px", marginBottom: "16px" }}>💝</div>
-        <h3 style={{ color: TEXT_DARK, fontWeight: "400", fontSize: "20px", margin: "0 0 12px", fontFamily: "'Georgia', serif" }}>
-          Your Generosity Makes a Difference
-        </h3>
-        <p style={{ color: TEXT_MED, fontSize: "15px", lineHeight: "1.7", margin: "0 0 24px", fontFamily: "'Georgia', serif" }}>
-          Your donations help us maintain this platform, support our prayer community,
-          and expand our ministry's outreach. Every gift — no matter the size — is a
-          blessing that keeps this mission alive.
-        </p>
-
-        <div style={{
-          backgroundColor: PINK_LIGHT,
-          borderRadius: "12px",
-          padding: "20px",
-          marginBottom: "24px",
-        }}>
-          <p style={{ color: PINK_DARK, fontSize: "14px", fontFamily: "'Georgia', serif", margin: 0, fontWeight: "bold" }}>
-            🔜 Online Donations Coming Soon
-          </p>
-          <p style={{ color: TEXT_MED, fontSize: "13px", fontFamily: "'Georgia', serif", margin: "8px 0 0" }}>
-            We're setting up secure payment processing. In the meantime, please reach out
-            to us directly for donation inquiries.
-          </p>
+      <div style={{ maxWidth: 1100, margin: "0 auto", display: "grid", gridTemplateColumns: "220px 1fr 200px", gap: 0, minHeight: "calc(100vh - 57px)" }}>
+        {/* Sidebar */}
+        <div style={{ borderRight: "0.5px solid #f0dce8", padding: "20px 12px", background: "#fff", position: "sticky", top: 57, height: "calc(100vh - 57px)" }}>
+          {[{ id: "wall", label: "Prayer Wall", icon: "🏠" }, { id: "donate", label: "Donations", icon: "♡" }, { id: "submit", label: "Submit Request", icon: "✦" }].map(item => (
+            <div key={item.id} onClick={() => setTab(item.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, fontSize: 13, color: tab === item.id ? "#7d2a4a" : "#7a5068", background: tab === item.id ? "#fbeaf2" : "none", fontWeight: tab === item.id ? 700 : 400, cursor: "pointer", marginBottom: 4 }}>
+              <span>{item.icon}</span> {item.label}
+            </div>
+          ))}
+          <div style={{ margin: "16px 0", height: "0.5px", background: "#f0dce8" }} />
+          {user && (
+            <div onClick={() => profile && setShowProfile(profile)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, fontSize: 13, color: "#7a5068", cursor: "pointer" }}>
+              <span>👤</span> My Profile
+            </div>
+          )}
+          <button onClick={() => { setTab("submit"); if (!user) { setShowAuth(true); } }} style={{ width: "100%", background: "#c2527e", color: "#fff", border: "none", borderRadius: 22, padding: "10px", fontSize: 13, fontWeight: 600, cursor: "pointer", marginTop: 16, fontFamily: "inherit" }}>
+            + Submit Request
+          </button>
         </div>
 
-        <div style={{
-          padding: "16px",
-          borderRadius: "12px",
-          border: `1px dashed ${PINK}`,
-          backgroundColor: CREAM,
-        }}>
-          <p style={{ color: TEXT_DARK, fontSize: "14px", margin: "0 0 4px", fontFamily: "'Georgia', serif", fontWeight: "bold" }}>
-            Contact Us to Give
-          </p>
-          <a
-            href="mailto:info@askandseekfoundation.org"
-            style={{ color: PINK_DARK, fontSize: "14px", fontFamily: "'Georgia', serif" }}
-          >
-            info@askandseekfoundation.org
-          </a>
+        {/* Main Feed */}
+        <div style={{ background: "#faf5f8" }}>
+          <div style={{ background: "#fff", borderBottom: "0.5px solid #f0dce8", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 15, fontWeight: 700, color: "#1a0d14" }}>
+              {tab === "wall" ? "Prayer Wall" : tab === "donate" ? "Donations ♡" : "Submit a Request"}
+            </span>
+            {tab === "wall" && (
+              <span style={{ display: "flex", alignItems: "center", gap: 5, background: "#fbeaf2", border: "0.5px solid #e8a0be", borderRadius: 12, padding: "3px 10px", fontSize: 11, color: "#7d2a4a" }}>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#e05070", display: "inline-block" }} /> Live
+              </span>
+            )}
+          </div>
+
+          {tab === "wall" && (
+            <div>
+              {loading ? (
+                <div style={{ textAlign: "center", padding: 40, color: "#b090a4" }}>Loading prayers... 🙏</div>
+              ) : prayers.length === 0 ? (
+                <div style={{ textAlign: "center", padding: 40, color: "#b090a4" }}>No prayers yet. Be the first to share. 🙏</div>
+              ) : prayers.map(prayer => (
+                <div key={prayer.id} style={{ background: "#fff", borderBottom: "0.5px solid #f0dce8", padding: "16px 18px" }}>
+                  <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10 }}>
+                    <div onClick={() => !prayer.is_anonymous && prayer.profiles && setShowProfile(prayer.profiles)}>
+                      <Avatar profile={prayer.is_anonymous ? null : prayer.profiles} size={42} />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#1a0d14", cursor: prayer.is_anonymous ? "default" : "pointer" }} onClick={() => !prayer.is_anonymous && prayer.profiles && setShowProfile(prayer.profiles)}>
+                        {prayer.is_anonymous ? "Anonymous" : prayer.profiles?.full_name || prayer.profiles?.username || "Community Member"}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#b090a4" }}>
+                        {prayer.is_anonymous ? "Private request" : `@${prayer.profiles?.username || ""}`} · {timeAgo(prayer.created_at)}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: "inline-flex", alignItems: "center", gap: 3, background: "#fbeaf2", color: "#7d2a4a", borderRadius: 10, padding: "2px 8px", fontSize: 10, fontWeight: 600, marginBottom: 8 }}>
+                    {prayer.category}
+                  </div>
+                  <div style={{ fontSize: 13, color: "#1a0d14", lineHeight: 1.7, marginBottom: 10 }}>{prayer.content}</div>
+                  {prayer.status === "prayed" && (
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "#eaf5ee", border: "0.5px solid #7dc898", borderRadius: 8, padding: "4px 10px", fontSize: 11, color: "#1a5030", fontWeight: 600, marginBottom: 10 }}>
+                      ✓ In God's Hands {prayer.prayed_by && `— prayed for by ${prayer.prayed_by}`}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                    {[{ type: "pray", emoji: "🙏" }, { type: "cross", emoji: "✝️" }, { type: "heart", emoji: "❤️" }].map(({ type, emoji }) => (
+                      <button key={type} onClick={() => handleReact(prayer.id, type)} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: hasReacted(prayer, type) ? "#fce4ef" : "#fbeaf2", border: `1px solid ${hasReacted(prayer, type) ? "#c2527e" : "#e8a0be"}`, borderRadius: 16, padding: "4px 10px", fontSize: 12, cursor: "pointer", fontWeight: hasReacted(prayer, type) ? 700 : 400, fontFamily: "inherit" }}>
+                        {emoji} <span style={{ color: "#7d2a4a" }}>{getReactionCount(prayer, type)}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {prayer.comments?.length > 0 && (
+                    <div style={{ background: "#faf5f8", borderRadius: 8, padding: "8px 12px", marginBottom: 10, borderLeft: "3px solid #e8a0be" }}>
+                      {prayer.comments.slice(0, 2).map(c => (
+                        <div key={c.id} style={{ fontSize: 12, color: "#7a5068", marginBottom: 4 }}>
+                          <span style={{ fontWeight: 700, color: "#1a0d14", cursor: "pointer" }} onClick={() => !c.is_anonymous && c.profiles && setShowProfile(c.profiles)}>
+                            {c.is_anonymous ? "Anonymous" : c.profiles?.full_name || c.profiles?.username}
+                          </span>
+                          {" "}{c.content}
+                        </div>
+                      ))}
+                      {prayer.comments.length > 2 && <div style={{ fontSize: 11, color: "#b090a4" }}>+ {prayer.comments.length - 2} more comments</div>}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 4, marginTop: 8 }}>
+                    <input value={commentInputs[prayer.id] || ""} onChange={e => setCommentInputs(p => ({ ...p, [prayer.id]: e.target.value }))} onKeyDown={e => e.key === "Enter" && handleComment(prayer.id)} placeholder={user ? "Add a comment..." : "Sign in to comment..."} style={{ flex: 1, padding: "6px 12px", border: "1px solid #f0dce8", borderRadius: 20, fontSize: 12, fontFamily: "inherit", background: "#faf5f8", outline: "none" }} />
+                    <button onClick={() => handleComment(prayer.id)} style={{ background: "#c2527e", color: "#fff", border: "none", borderRadius: 20, padding: "6px 14px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Send</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {tab === "donate" && (
+            <div style={{ padding: 20 }}>
+              <div style={{ background: "#fff", borderRadius: 12, padding: 20, marginBottom: 16, border: "0.5px solid #f0dce8", textAlign: "center" }}>
+                <div style={{ fontSize: 28, fontWeight: 700, color: "#7d2a4a", marginBottom: 4 }}>
+                  ${donations.reduce((sum, d) => sum + (d.amount / 100), 0).toLocaleString()}
+                </div>
+                <div style={{ fontSize: 13, color: "#b090a4", marginBottom: 16 }}>Total donations received</div>
+                <button style={{ background: "#c2527e", color: "#fff", border: "none", borderRadius: 22, padding: "12px 32px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>♡ Give Now via Stripe</button>
+                <div style={{ fontSize: 11, color: "#b090a4", marginTop: 8 }}>Ask & Seek Foundation · 501(c)(3) Nonprofit · EIN 42-2057592</div>
+              </div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#b090a4", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 10 }}>Live Donations</div>
+              {donations.length === 0 ? (
+                <div style={{ textAlign: "center", padding: 40, color: "#b090a4" }}>No donations yet. Be the first to give! ♡</div>
+              ) : donations.map(d => (
+                <div key={d.id} style={{ background: "#fff", borderRadius: 10, padding: 14, marginBottom: 10, border: "0.5px solid #f0dce8", display: "flex", alignItems: "center", gap: 12 }}>
+                  <Avatar profile={d.is_anonymous ? null : d.profiles} size={36} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#1a0d14" }}>{d.is_anonymous ? "Anonymous" : d.profiles?.full_name || "Donor"}</div>
+                    {d.message && <div style={{ fontSize: 12, color: "#7a5068", fontStyle: "italic" }}>"{d.message}"</div>}
+                    <div style={{ fontSize: 11, color: "#b090a4" }}>{timeAgo(d.created_at)}</div>
+                  </div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: "#7d2a4a" }}>${(d.amount / 100).toFixed(2)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {tab === "submit" && (
+            <div style={{ padding: 20 }}>
+              <div style={{ background: "#fff", borderRadius: 12, padding: 24, border: "0.5px solid #f0dce8" }}>
+                <div style={{ textAlign: "center", marginBottom: 20 }}>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "#7d2a4a", marginBottom: 4 }}>Share Your Prayer Request 🙏</div>
+                  <div style={{ fontSize: 13, color: "#b090a4", fontStyle: "italic" }}>"Cast your burdens upon Him, for He cares for you." — 1 Peter 5:7</div>
+                </div>
+                {!user && (
+                  <div style={{ background: "#fbeaf2", border: "1px solid #e8a0be", borderRadius: 10, padding: 14, marginBottom: 16, textAlign: "center", fontSize: 13, color: "#7d2a4a" }}>
+                    <span onClick={() => { setAuthMode("register"); setShowAuth(true); }} style={{ cursor: "pointer", fontWeight: 700, textDecoration: "underline" }}>Create an account</span> or <span onClick={() => { setAuthMode("login"); setShowAuth(true); }} style={{ cursor: "pointer", fontWeight: 700, textDecoration: "underline" }}>sign in</span> to submit a prayer request.
+                  </div>
+                )}
+                <form onSubmit={handleSubmitPrayer}>
+                  <div style={{ marginBottom: 14 }}>
+                    <label style={{ fontSize: 12, color: "#b090a4", display: "block", marginBottom: 6 }}>Category</label>
+                    <select value={prayerForm.category} onChange={e => setPrayerForm(p => ({ ...p, category: e.target.value }))} style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, fontSize: 14, fontFamily: "inherit", background: "#faf5f8" }}>
+                      {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ marginBottom: 14 }}>
+                    <label style={{ fontSize: 12, color: "#b090a4", display: "block", marginBottom: 6 }}>Your prayer request</label>
+                    <textarea value={prayerForm.content} onChange={e => setPrayerForm(p => ({ ...p, content: e.target.value }))} placeholder="Share what's on your heart..." required rows={5} style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, fontSize: 14, fontFamily: "inherit", background: "#faf5f8", resize: "vertical" }} />
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
+                    <input type="checkbox" id="anon" checked={prayerForm.is_anonymous} onChange={e => setPrayerForm(p => ({ ...p, is_anonymous: e.target.checked }))} />
+                    <label htmlFor="anon" style={{ fontSize: 13, color: "#7a5068", cursor: "pointer" }}>Post anonymously</label>
+                  </div>
+                  <button type="submit" disabled={submitting || !user} style={{ width: "100%", background: user ? "#c2527e" : "#e0c0cc", color: "#fff", border: "none", borderRadius: 22, padding: "12px", fontSize: 14, fontWeight: 700, cursor: user ? "pointer" : "not-allowed", fontFamily: "inherit" }}>
+                    {submitting ? "Submitting..." : "Send My Request 🙏"}
+                  </button>
+                  <div style={{ textAlign: "center", fontSize: 11, color: "#b090a4", marginTop: 10 }}>✦ AI-reviewed for community safety</div>
+                </form>
+              </div>
+            </div>
+          )}
         </div>
 
-        <p style={{ color: TEXT_LIGHT, fontSize: "12px", marginTop: "20px", fontFamily: "'Georgia', serif" }}>
-          Ask & Seek Foundation is a registered 501(c)(3) nonprofit.
-          <br />
-          EIN: 42-2057592 · All donations are tax-deductible.
-        </p>
+        {/* Right Panel */}
+        <div style={{ borderLeft: "0.5px solid #f0dce8", padding: "20px 14px", background: "#fff", position: "sticky", top: 57, height: "calc(100vh - 57px)", overflowY: "auto" }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#b090a4", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 12 }}>Trending</div>
+          {["Healing", "Provision", "Family", "Strength", "Spiritual Growth"].map((cat, i) => (
+            <div key={cat} style={{ padding: "8px 0", borderBottom: "0.5px solid #f0dce8" }}>
+              <div style={{ fontSize: 10, color: "#b090a4" }}>Category</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#1a0d14" }}>#{cat}</div>
+              <div style={{ fontSize: 11, color: "#b090a4" }}>{prayers.filter(p => p.category === cat).length} requests</div>
+            </div>
+          ))}
+          <div style={{ marginTop: 16, background: "#fbeaf2", borderRadius: 10, padding: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#7d2a4a", marginBottom: 8 }}>About</div>
+            <div style={{ fontSize: 11, color: "#7a5068", lineHeight: 1.6 }}>Lifted by Prayer is a ministry of Ask & Seek Foundation, a 501(c)(3) nonprofit. EIN 42-2057592</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ background: "#7d2a4a", color: "#f4c0d4", textAlign: "center", padding: "20px", fontSize: 12 }}>
+        LIFTED BY PRAYER · A MINISTRY OF ASK & SEEK FOUNDATION<br />
+        <span style={{ fontSize: 10, opacity: 0.7 }}>501(c)(3) Nonprofit · info@askandseekfoundation.org</span>
       </div>
     </div>
   );
-}
-
-/* ─── Helper: relative time ─── */
-function getTimeAgo(dateStr) {
-  if (!dateStr) return "";
-  const now = new Date();
-  const then = new Date(dateStr);
-  const diffMs = now - then;
-  const mins = Math.floor(diffMs / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  if (days < 7) return `${days}d ago`;
-  const weeks = Math.floor(days / 7);
-  if (weeks < 5) return `${weeks}w ago`;
-  return then.toLocaleDateString();
 }
