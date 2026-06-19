@@ -203,13 +203,14 @@ export default function App() {
     fetchPrayers();
   };
 
-  const handleAvatarUpload = async (e) => {
+const handleAvatarUpload = async (e) => {
     if (!user) return;
     const file = e.target.files[0];
     if (!file) return;
-    const ext = file.name.split(".").pop();
-    const path = `avatars/${user.id}.${ext}`;
-    await supabase.storage.from("avatars").upload(path, file, { upsert: true });
+    const ext = file.name.split(".").pop().toLowerCase();
+    const path = `${user.id}.${ext}`;
+    const { error } = await supabase.storage.from("avatars").upload(path, file, { upsert: true });
+    if (error) { showNotif("Failed to upload photo. Please try again.", "error"); return; }
     const { data } = supabase.storage.from("avatars").getPublicUrl(path);
     await supabase.from("profiles").update({ avatar_url: data.publicUrl }).eq("id", user.id);
     fetchProfile(user.id);
