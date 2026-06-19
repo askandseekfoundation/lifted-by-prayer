@@ -19,10 +19,26 @@ const CATEGORIES = [
   "Other",
 ];
 
+const extractHashtags = (text) => {
+  const matches = text.match(/#[a-zA-Z0-9_]+/g);
+  return matches ? [...new Set(matches.map(t => t.toLowerCase()))] : [];
+};
+
+const renderContentWithHashtags = (content, onHashtagClick) => {
+  const parts = content.split(/(#[a-zA-Z0-9_]+)/g);
+  return parts.map((part, i) =>
+    part.match(/^#[a-zA-Z0-9_]+$/) ? (
+      <span key={i} onClick={() => onHashtagClick(part.toLowerCase())} style={{ color: "#c2527e", cursor: "pointer", fontWeight: 600 }}>{part}</span>
+    ) : part
+  );
+};
+
 export default function App() {
   const [tab, setTab] = useState("wall");
   const [prayers, setPrayers] = useState([]);
   const [donations, setDonations] = useState([]);
+  const [hashtags, setHashtags] = useState([]);
+  const [activeHashtag, setActiveHashtag] = useState(null);
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -49,10 +65,12 @@ export default function App() {
 
     fetchPrayers();
     fetchDonations();
+    fetchHashtags();
 
     const pollInterval = setInterval(() => {
       fetchPrayers();
       fetchDonations();
+      fetchHashtags();
     }, 10000);
 
     return () => {
@@ -70,7 +88,7 @@ export default function App() {
     setLoading(true);
     const { data } = await supabase
       .from("prayers")
-      .select(`*, profiles(username, full_name, avatar_url), comments(id, content, is_anonymous, created_at, profiles(username, full_name, avatar_url)), reactions(id, reaction_type, user_id)`)
+      .select(`*, profiles(username, full_name, avatar_url), comments(id, content, is_anonymous, created_at, profiles(username, full_name, avatar_url)), reactions(id, reaction_type, user_id), hashtags(tag)`)
       .order("created_at", { ascending: false });
     setPrayers(data || []);
     setLoading(false);
@@ -83,6 +101,21 @@ export default function App() {
       .order("created_at", { ascending: false })
       .limit(20);
     setDonations(data || []);
+  };
+
+  const fetchHashtags = async () => {
+    const { data } = await supabase
+      .from("hashtags")
+      .select("tag");
+    if (data) {
+      const counts = {};
+      data.forEach(({ tag }) => { counts[tag] = (counts[tag] || 0) + 1; });
+      const sorted = Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([tag, count]) => ({ tag, count }));
+      setHashtags(sorted);
+    }
   };
 
   const showNotif = (msg, type = "success") => {
@@ -146,17 +179,28 @@ export default function App() {
         setSubmitting(false);
         return;
       }
-      await supabase.from("prayers").insert({
+      const { data: newPrayer, error } = await supabase.from("prayers").insert({
         user_id: user.id,
         content: prayerForm.content,
         category: prayerForm.category,
         is_anonymous: prayerForm.is_anonymous,
         status: "submitted"
-      });
+      }).select().single();
+
+      if (error) throw error;
+
+      const tags = extractHashtags(prayerForm.content);
+      if (tags.length > 0 && newPrayer) {
+        await supabase.from("hashtags").insert(
+          tags.map(tag => ({ prayer_id: newPrayer.id, tag }))
+        );
+      }
+
       setPrayerForm({ content: "", category: "Healing", is_anonymous: false });
       showNotif("Your prayer request has been lifted! 🙏");
       setTab("wall");
       fetchPrayers();
+      fetchHashtags();
     } catch {
       showNotif("Something went wrong. Please try again.", "error");
     }
@@ -203,19 +247,28 @@ export default function App() {
     fetchPrayers();
   };
 
-const handleAvatarUpload = async (e) => {
-  if (!user) return;
-  const file = e.target.files[0];
-  if (!file) return;
-  const ext = file.name.split(".").pop().toLowerCase();
-  const path = `${user.id}.${ext}`;
-  const { error } = await supabase.storage.from("avatars").upload(path, file, { upsert: true });
-  if (error) { showNotif("Failed to upload photo. Please try again.", "error"); return; }
-  const avatarUrl = `https://fdphbzxkqqihigqhpynw.supabase.co/storage/v1/object/public/avatars/${path}`;
-  await supabase.from("profiles").update({ avatar_url: avatarUrl }).eq("id", user.id);
-  fetchProfile(user.id);
-  showNotif("Profile photo updated! 🙏");
-};
+  const handleAvatarUpload = async (e) => {
+    if (!user) return;
+    const file = e.target.files[0];
+    if (!file) return;
+    const ext = file.name.split(".").pop().toLowerCase();
+    const path = `${user.id}.${ext}`;
+    const { error } = await supabase.storage.from("avatars").upload(path, file, { upsert: true });
+    if (error) { showNotif("Failed to upload photo. Please try again.", "error"); return; }
+    const avatarUrl = `https://fdphbzxkqqihigqhpynw.supabase.co/storage/v1/object/public/avatars/${path}`;
+    await supabase.from("profiles").update({ avatar_url: avatarUrl }).eq("id", user.id);
+    fetchProfile(user.id);
+    showNotif("Profile photo updated! 🙏");
+  };
+
+  const handleHashtagClick = (tag) => {
+    setActiveHashtag(activeHashtag === tag ? null : tag);
+    setTab("wall");
+  };
+
+  const filteredPrayers = activeHashtag
+    ? prayers.filter(p => p.hashtags?.some(h => h.tag === activeHashtag))
+    : prayers;
 
   const getReactionCount = (prayer, type) => prayer.reactions?.filter(r => r.reaction_type === type).length || 0;
   const hasReacted = (prayer, type) => prayer.reactions?.some(r => r.reaction_type === type && r.user_id === user?.id);
@@ -244,7 +297,7 @@ const handleAvatarUpload = async (e) => {
     useEffect(() => {
       if (profileData) {
         supabase.from("prayers")
-          .select("*, reactions(id, reaction_type, user_id), comments(id)")
+          .select("*, reactions(id, reaction_type, user_id), comments(id), hashtags(tag)")
           .eq("user_id", profileData.id)
           .eq("is_anonymous", false)
           .order("created_at", { ascending: false })
@@ -269,7 +322,9 @@ const handleAvatarUpload = async (e) => {
               {profilePrayers.map(p => (
                 <div key={p.id} style={{ background: "#faf5f8", borderRadius: 10, padding: 12, marginBottom: 10 }}>
                   <div style={{ fontSize: 12, color: "#b090a4", marginBottom: 4 }}>{timeAgo(p.created_at)}</div>
-                  <div style={{ fontSize: 13, color: "#1a0d14", lineHeight: 1.6 }}>{p.content}</div>
+                  <div style={{ fontSize: 13, color: "#1a0d14", lineHeight: 1.6 }}>
+                    {renderContentWithHashtags(p.content, (tag) => { onClose(); handleHashtagClick(tag); })}
+                  </div>
                   <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                     <span style={{ fontSize: 12, color: "#7a5068" }}>🙏 {getReactionCount(p, "pray")}</span>
                     <span style={{ fontSize: 12, color: "#7a5068" }}>✝️ {getReactionCount(p, "cross")}</span>
@@ -302,12 +357,12 @@ const handleAvatarUpload = async (e) => {
             <form onSubmit={handleAuth}>
               {authMode === "register" && (
                 <>
-                  <input value={authForm.full_name} onChange={e => setAuthForm(p => ({ ...p, full_name: e.target.value }))} placeholder="Full name" required style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, marginBottom: 10, fontSize: 14, fontFamily: "inherit", background: "#faf5f8" }} />
-                  <input value={authForm.username} onChange={e => setAuthForm(p => ({ ...p, username: e.target.value }))} placeholder="Username (no spaces)" required style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, marginBottom: 10, fontSize: 14, fontFamily: "inherit", background: "#faf5f8" }} />
+                  <input value={authForm.full_name} onChange={e => setAuthForm(p => ({ ...p, full_name: e.target.value }))} placeholder="Full name" required style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, marginBottom: 10, fontSize: 14, fontFamily: "inherit", background: "#faf5f8", boxSizing: "border-box" }} />
+                  <input value={authForm.username} onChange={e => setAuthForm(p => ({ ...p, username: e.target.value }))} placeholder="Username (no spaces)" required style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, marginBottom: 10, fontSize: 14, fontFamily: "inherit", background: "#faf5f8", boxSizing: "border-box" }} />
                 </>
               )}
-              <input type="email" value={authForm.email} onChange={e => setAuthForm(p => ({ ...p, email: e.target.value }))} placeholder="Email address" required style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, marginBottom: 10, fontSize: 14, fontFamily: "inherit", background: "#faf5f8" }} />
-              <input type="password" value={authForm.password} onChange={e => setAuthForm(p => ({ ...p, password: e.target.value }))} placeholder="Password" required style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, marginBottom: 16, fontSize: 14, fontFamily: "inherit", background: "#faf5f8" }} />
+              <input type="email" value={authForm.email} onChange={e => setAuthForm(p => ({ ...p, email: e.target.value }))} placeholder="Email address" required style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, marginBottom: 10, fontSize: 14, fontFamily: "inherit", background: "#faf5f8", boxSizing: "border-box" }} />
+              <input type="password" value={authForm.password} onChange={e => setAuthForm(p => ({ ...p, password: e.target.value }))} placeholder="Password" required style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, marginBottom: 16, fontSize: 14, fontFamily: "inherit", background: "#faf5f8", boxSizing: "border-box" }} />
               <button type="submit" disabled={submitting} style={{ width: "100%", background: "#c2527e", color: "#fff", border: "none", borderRadius: 22, padding: "12px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
                 {submitting ? "Please wait..." : authMode === "login" ? "Sign In" : "Create Account"}
               </button>
@@ -357,9 +412,9 @@ const handleAvatarUpload = async (e) => {
 
       <div style={{ maxWidth: 1100, margin: "0 auto", display: "grid", gridTemplateColumns: "220px 1fr 200px", gap: 0, minHeight: "calc(100vh - 57px)" }}>
         {/* Sidebar */}
-        <div style={{ borderRight: "0.5px solid #f0dce8", padding: "20px 12px", background: "#fff", position: "sticky", top: 57, height: "calc(100vh - 57px)" }}>
+        <div style={{ borderRight: "0.5px solid #f0dce8", padding: "20px 12px", background: "#fff", position: "sticky", top: 57, height: "calc(100vh - 57px)", overflowY: "auto" }}>
           {[{ id: "wall", label: "Prayer Wall", icon: "🏠" }, { id: "donate", label: "Donations", icon: "♡" }, { id: "submit", label: "Submit Request", icon: "✦" }].map(item => (
-            <div key={item.id} onClick={() => setTab(item.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, fontSize: 13, color: tab === item.id ? "#7d2a4a" : "#7a5068", background: tab === item.id ? "#fbeaf2" : "none", fontWeight: tab === item.id ? 700 : 400, cursor: "pointer", marginBottom: 4 }}>
+            <div key={item.id} onClick={() => { setTab(item.id); setActiveHashtag(null); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, fontSize: 13, color: tab === item.id ? "#7d2a4a" : "#7a5068", background: tab === item.id ? "#fbeaf2" : "none", fontWeight: tab === item.id ? 700 : 400, cursor: "pointer", marginBottom: 4 }}>
               <span>{item.icon}</span> {item.label}
             </div>
           ))}
@@ -377,9 +432,14 @@ const handleAvatarUpload = async (e) => {
         {/* Main Feed */}
         <div style={{ background: "#faf5f8" }}>
           <div style={{ background: "#fff", borderBottom: "0.5px solid #f0dce8", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 15, fontWeight: 700, color: "#1a0d14" }}>
-              {tab === "wall" ? "Prayer Wall" : tab === "donate" ? "Donations ♡" : "Submit a Request"}
-            </span>
+            <div>
+              <span style={{ fontSize: 15, fontWeight: 700, color: "#1a0d14" }}>
+                {tab === "wall" ? activeHashtag ? `${activeHashtag}` : "Prayer Wall" : tab === "donate" ? "Donations ♡" : "Submit a Request"}
+              </span>
+              {activeHashtag && (
+                <span onClick={() => setActiveHashtag(null)} style={{ marginLeft: 10, fontSize: 11, color: "#c2527e", cursor: "pointer", background: "#fbeaf2", borderRadius: 10, padding: "2px 8px" }}>✕ Clear filter</span>
+              )}
+            </div>
             {tab === "wall" && (
               <span style={{ display: "flex", alignItems: "center", gap: 5, background: "#fbeaf2", border: "0.5px solid #e8a0be", borderRadius: 12, padding: "3px 10px", fontSize: 11, color: "#7d2a4a" }}>
                 <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#e05070", display: "inline-block" }} /> Live
@@ -391,9 +451,11 @@ const handleAvatarUpload = async (e) => {
             <div>
               {loading ? (
                 <div style={{ textAlign: "center", padding: 40, color: "#b090a4" }}>Loading prayers... 🙏</div>
-              ) : prayers.length === 0 ? (
-                <div style={{ textAlign: "center", padding: 40, color: "#b090a4" }}>No prayers yet. Be the first to share. 🙏</div>
-              ) : prayers.map(prayer => (
+              ) : filteredPrayers.length === 0 ? (
+                <div style={{ textAlign: "center", padding: 40, color: "#b090a4" }}>
+                  {activeHashtag ? `No prayers found with ${activeHashtag}` : "No prayers yet. Be the first to share. 🙏"}
+                </div>
+              ) : filteredPrayers.map(prayer => (
                 <div key={prayer.id} style={{ background: "#fff", borderBottom: "0.5px solid #f0dce8", padding: "16px 18px" }}>
                   <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10 }}>
                     <div onClick={() => !prayer.is_anonymous && prayer.profiles && setShowProfile(prayer.profiles)}>
@@ -411,7 +473,9 @@ const handleAvatarUpload = async (e) => {
                   <div style={{ display: "inline-flex", alignItems: "center", gap: 3, background: "#fbeaf2", color: "#7d2a4a", borderRadius: 10, padding: "2px 8px", fontSize: 10, fontWeight: 600, marginBottom: 8 }}>
                     {prayer.category}
                   </div>
-                  <div style={{ fontSize: 13, color: "#1a0d14", lineHeight: 1.7, marginBottom: 10 }}>{prayer.content}</div>
+                  <div style={{ fontSize: 13, color: "#1a0d14", lineHeight: 1.7, marginBottom: 10 }}>
+                    {renderContentWithHashtags(prayer.content, handleHashtagClick)}
+                  </div>
                   {prayer.status === "prayed" && (
                     <div style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "#eaf5ee", border: "0.5px solid #7dc898", borderRadius: 8, padding: "4px 10px", fontSize: 11, color: "#1a5030", fontWeight: 600, marginBottom: 10 }}>
                       ✓ In God's Hands {prayer.prayed_by && `— prayed for by ${prayer.prayed_by}`}
@@ -494,7 +558,8 @@ const handleAvatarUpload = async (e) => {
                   </div>
                   <div style={{ marginBottom: 14 }}>
                     <label style={{ fontSize: 12, color: "#b090a4", display: "block", marginBottom: 6 }}>Your prayer request</label>
-                    <textarea value={prayerForm.content} onChange={e => setPrayerForm(p => ({ ...p, content: e.target.value }))} placeholder="Share what's on your heart..." required rows={5} style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, fontSize: 14, fontFamily: "inherit", background: "#faf5f8", resize: "vertical" }} />
+                    <textarea value={prayerForm.content} onChange={e => setPrayerForm(p => ({ ...p, content: e.target.value }))} placeholder="Share what's on your heart... Use #hashtags to join trending topics!" required rows={5} style={{ width: "100%", padding: "10px 14px", border: "1px solid #f0dce8", borderRadius: 10, fontSize: 14, fontFamily: "inherit", background: "#faf5f8", resize: "vertical" }} />
+                    <div style={{ fontSize: 11, color: "#b090a4", marginTop: 4 }}>Tip: Use #healing #provision #family etc. to join trending topics</div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
                     <input type="checkbox" id="anon" checked={prayerForm.is_anonymous} onChange={e => setPrayerForm(p => ({ ...p, is_anonymous: e.target.checked }))} />
@@ -513,11 +578,13 @@ const handleAvatarUpload = async (e) => {
         {/* Right Panel */}
         <div style={{ borderLeft: "0.5px solid #f0dce8", padding: "20px 14px", background: "#fff", position: "sticky", top: 57, height: "calc(100vh - 57px)", overflowY: "auto" }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: "#b090a4", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 12 }}>Trending</div>
-          {["Healing", "Provision", "Family", "Strength", "Spiritual Growth"].map((cat) => (
-            <div key={cat} style={{ padding: "8px 0", borderBottom: "0.5px solid #f0dce8" }}>
-              <div style={{ fontSize: 10, color: "#b090a4" }}>Category</div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#1a0d14" }}>#{cat}</div>
-              <div style={{ fontSize: 11, color: "#b090a4" }}>{prayers.filter(p => p.category === cat).length} requests</div>
+          {hashtags.length === 0 ? (
+            <div style={{ fontSize: 12, color: "#b090a4", fontStyle: "italic" }}>No trending tags yet. Start using #hashtags in your prayers!</div>
+          ) : hashtags.map(({ tag, count }) => (
+            <div key={tag} onClick={() => handleHashtagClick(tag)} style={{ padding: "8px 0", borderBottom: "0.5px solid #f0dce8", cursor: "pointer" }}>
+              <div style={{ fontSize: 10, color: "#b090a4" }}>Trending</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: activeHashtag === tag ? "#c2527e" : "#1a0d14" }}>{tag}</div>
+              <div style={{ fontSize: 11, color: "#b090a4" }}>{count} {count === 1 ? "prayer" : "prayers"}</div>
             </div>
           ))}
           <div style={{ marginTop: 16, background: "#fbeaf2", borderRadius: 10, padding: 12 }}>
