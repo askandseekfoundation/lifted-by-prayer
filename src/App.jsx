@@ -47,8 +47,17 @@ export default function App() {
     });
     fetchPrayers();
     fetchDonations();
-    const prayerSub = supabase.channel("prayers").on("postgres_changes", { event: "*", schema: "public", table: "prayers" }, fetchPrayers).subscribe();
-    const donationSub = supabase.channel("donations").on("postgres_changes", { event: "*", schema: "public", table: "donations" }, fetchDonations).subscribe();
+    const prayerSub = supabase
+  .channel("public:prayers")
+  .on("postgres_changes", { event: "INSERT", schema: "public", table: "prayers" }, () => fetchPrayers())
+  .on("postgres_changes", { event: "UPDATE", schema: "public", table: "prayers" }, () => fetchPrayers())
+  .on("postgres_changes", { event: "DELETE", schema: "public", table: "prayers" }, () => fetchPrayers())
+  .subscribe();
+
+const donationSub = supabase
+  .channel("public:donations")
+  .on("postgres_changes", { event: "INSERT", schema: "public", table: "donations" }, () => fetchDonations())
+  .subscribe();
     return () => { subscription.unsubscribe(); supabase.removeChannel(prayerSub); supabase.removeChannel(donationSub); };
   }, []);
 
