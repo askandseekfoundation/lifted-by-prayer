@@ -2,8 +2,8 @@ import { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
-  "https://fdphbzxkqqihigqhpynw.supabase.co",
-  "sb_publishable_4Vq6vik7S51luaVJkN3ASg_T8LN7bL6"
+  process.env.REACT_APP_SUPABASE_URL,
+  process.env.REACT_APP_SUPABASE_ANON_KEY
 );
 
 const CATEGORIES = [
